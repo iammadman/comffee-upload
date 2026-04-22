@@ -50,6 +50,14 @@
   </div>
 
   <div id="fatal" class="fatal" style="display:none"></div>
+
+  <div id="done" style="display:none;flex:1;align-items:center;justify-content:center;text-align:center;min-height:60vh">
+    <div>
+      <div style="font-size:72px;margin-bottom:12px">✓</div>
+      <div style="font-size:22px;font-weight:700;color:#2e7d32;margin-bottom:8px">Uploaded</div>
+      <div style="font-size:14px;color:var(--muted)">You may close this window.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -132,9 +140,12 @@
       var data = {}
       try { data = await res.json() } catch(e){}
       if (res.ok && data.success) {
-        status.textContent = '✓ Uploaded. You can close this page.'
-        status.className = 'status ok'
-        btn.style.display = 'none'
+        // Replace the entire page with a clean "Uploaded" confirmation.
+        document.querySelector('.wrap > div:first-child').style.display = 'none'
+        document.getElementById('mainBody').style.display = 'none'
+        var doneEl = document.getElementById('done')
+        doneEl.style.display = 'flex'
+        return
       } else {
         status.textContent = (data && data.message) || 'Upload failed. Check your PIN and try again.'
         status.className = 'status err'
