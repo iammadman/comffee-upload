@@ -39,8 +39,12 @@
 
     <div class="card">
       <label>Photo</label>
-      <input id="file" type="file" accept="image/*" style="display:none"/>
-      <button class="pickbtn secondary" id="pickBtn">📷 Take Photo</button>
+      <input id="fileCam"     type="file" accept="image/*" style="display:none"/>
+      <input id="fileGallery" type="file" accept="image/*" style="display:none"/>
+      <div style="display:flex;gap:8px">
+        <button class="pickbtn secondary" id="takeBtn"   style="flex:1">📷 Take Photo</button>
+        <button class="pickbtn secondary" id="uploadBtn" style="flex:1">🖼️ Upload Photo</button>
+      </div>
       <img id="preview" class="preview" style="display:none"/>
     </div>
 
@@ -51,11 +55,14 @@
 
   <div id="fatal" class="fatal" style="display:none"></div>
 
-  <div id="done" style="display:none;flex:1;align-items:center;justify-content:center;text-align:center;min-height:60vh">
+  <div id="done" style="display:none;flex:1;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:60vh;gap:16px">
     <div>
       <div style="font-size:72px;margin-bottom:12px">✓</div>
       <div style="font-size:22px;font-weight:700;color:#2e7d32;margin-bottom:8px">Uploaded</div>
-      <div style="font-size:14px;color:var(--muted)">You may close this window.</div>
+      <div style="font-size:14px;color:var(--muted)" id="doneSub">You may close this window.</div>
+    </div>
+    <div id="doneActions" style="display:none;width:100%;max-width:280px">
+      <button class="pickbtn" id="againBtn">Upload Another</button>
     </div>
   </div>
 </div>
@@ -93,14 +100,18 @@
   document.getElementById('mainBody').style.display = ''
   document.getElementById('tokenLine').textContent = 'Token ' + token.slice(0,8) + '… · ' + new Date().toLocaleString()
 
-  // Camera facing: selfie camera for attendance, rear camera otherwise
-  var fileInput = document.getElementById('file')
-  if (kind === 'attendance') fileInput.setAttribute('capture', 'user')
-  else fileInput.setAttribute('capture', 'environment')
+  // Camera facing: selfie camera for attendance, rear camera otherwise.
+  // Only fileCam forces camera; fileGallery stays unrestricted so the user
+  // can pick an existing photo from their gallery.
+  var fileCam = document.getElementById('fileCam')
+  var fileGallery = document.getElementById('fileGallery')
+  if (kind === 'attendance') fileCam.setAttribute('capture', 'user')
+  else fileCam.setAttribute('capture', 'environment')
 
   var endpoint = 'https://' + proj + '.supabase.co/functions/v1/pos-upload?t=' + encodeURIComponent(token)
   var imgBlob = null
   var coords = null
+  var uploadCount = 0
 
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
@@ -110,16 +121,36 @@
     )
   }
 
-  document.getElementById('pickBtn').addEventListener('click', function(){ fileInput.click() })
-  fileInput.addEventListener('change', function(e){
+  document.getElementById('takeBtn').addEventListener('click', function(){ fileCam.click() })
+  document.getElementById('uploadBtn').addEventListener('click', function(){ fileGallery.click() })
+
+  function onFilePicked(e) {
     var f = e.target.files[0]
     if (!f) return
     imgBlob = f
     var url = URL.createObjectURL(f)
     var img = document.getElementById('preview')
     img.src = url; img.style.display = 'block'
-    document.getElementById('pickBtn').textContent = '📷 Retake'
     document.getElementById('submitBtn').disabled = false
+  }
+  fileCam.addEventListener('change', onFilePicked)
+  fileGallery.addEventListener('change', onFilePicked)
+
+  // "Upload Another" — reset the form, keep the PIN prefilled so staff don't
+  // have to retype it for each receipt in the same session.
+  document.getElementById('againBtn').addEventListener('click', function(){
+    imgBlob = null
+    fileCam.value = ''
+    fileGallery.value = ''
+    document.getElementById('preview').style.display = 'none'
+    document.getElementById('submitBtn').disabled = true
+    document.getElementById('submitBtn').style.display = ''
+    document.getElementById('submitBtn').textContent = 'Upload'
+    document.getElementById('status').textContent = ''
+    document.getElementById('status').className = 'status'
+    document.getElementById('done').style.display = 'none'
+    document.querySelector('.wrap > div:first-child').style.display = ''
+    document.getElementById('mainBody').style.display = ''
   })
 
   document.getElementById('submitBtn').addEventListener('click', async function(){
@@ -140,11 +171,21 @@
       var data = {}
       try { data = await res.json() } catch(e){}
       if (res.ok && data.success) {
-        // Replace the entire page with a clean "Uploaded" confirmation.
+        uploadCount++
         document.querySelector('.wrap > div:first-child').style.display = 'none'
         document.getElementById('mainBody').style.display = 'none'
         var doneEl = document.getElementById('done')
         doneEl.style.display = 'flex'
+        // Only gcash supports multi-upload (cashiers collect receipts through
+        // one QR session). Movement/attendance stay single-use.
+        if (kind === 'gcash') {
+          document.getElementById('doneSub').textContent =
+            (uploadCount === 1 ? 'Receipt uploaded. You may close this window, or upload another.' :
+                                  uploadCount + ' receipts uploaded. You may close this window, or upload another.')
+          document.getElementById('doneActions').style.display = 'block'
+        } else {
+          document.getElementById('doneSub').textContent = 'You may close this window.'
+        }
         return
       } else {
         status.textContent = (data && data.message) || 'Upload failed. Check your PIN and try again.'
