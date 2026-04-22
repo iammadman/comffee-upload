@@ -55,14 +55,11 @@
 
   <div id="fatal" class="fatal" style="display:none"></div>
 
-  <div id="done" style="display:none;flex:1;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:60vh;gap:16px">
+  <div id="done" style="display:none;flex:1;align-items:center;justify-content:center;text-align:center;min-height:60vh">
     <div>
       <div style="font-size:72px;margin-bottom:12px">✓</div>
       <div style="font-size:22px;font-weight:700;color:#2e7d32;margin-bottom:8px">Uploaded</div>
       <div style="font-size:14px;color:var(--muted)" id="doneSub">You may close this window.</div>
-    </div>
-    <div id="doneActions" style="display:none;width:100%;max-width:280px">
-      <button class="pickbtn" id="againBtn">Upload Another</button>
     </div>
   </div>
 </div>
@@ -102,16 +99,18 @@
 
   // Camera facing: selfie camera for attendance, rear camera otherwise.
   // Only fileCam forces camera; fileGallery stays unrestricted so the user
-  // can pick an existing photo from their gallery.
+  // can pick an existing photo from their gallery. For GCash the gallery
+  // picker allows multiple selection so a cashier can batch-upload several
+  // receipts from the same QR session in one go. Other kinds stay single.
   var fileCam = document.getElementById('fileCam')
   var fileGallery = document.getElementById('fileGallery')
   if (kind === 'attendance') fileCam.setAttribute('capture', 'user')
   else fileCam.setAttribute('capture', 'environment')
+  if (kind === 'gcash') fileGallery.setAttribute('multiple', '')
 
   var endpoint = 'https://' + proj + '.supabase.co/functions/v1/pos-upload?t=' + encodeURIComponent(token)
-  var imgBlob = null
+  var selectedFiles = []   // array of File objects (1 for single, N for multi-select gallery)
   var coords = null
-  var uploadCount = 0
 
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
@@ -125,77 +124,70 @@
   document.getElementById('uploadBtn').addEventListener('click', function(){ fileGallery.click() })
 
   function onFilePicked(e) {
-    var f = e.target.files[0]
-    if (!f) return
-    imgBlob = f
-    var url = URL.createObjectURL(f)
+    var files = Array.prototype.slice.call(e.target.files || [])
+    if (files.length === 0) return
+    selectedFiles = files
     var img = document.getElementById('preview')
-    img.src = url; img.style.display = 'block'
-    document.getElementById('submitBtn').disabled = false
+    img.src = URL.createObjectURL(files[0])
+    img.style.display = 'block'
+    var submitBtn = document.getElementById('submitBtn')
+    submitBtn.disabled = false
+    submitBtn.textContent = files.length > 1 ? ('Upload ' + files.length + ' photos') : 'Upload'
   }
   fileCam.addEventListener('change', onFilePicked)
   fileGallery.addEventListener('change', onFilePicked)
-
-  // "Upload Another" — reset the form, keep the PIN prefilled so staff don't
-  // have to retype it for each receipt in the same session.
-  document.getElementById('againBtn').addEventListener('click', function(){
-    imgBlob = null
-    fileCam.value = ''
-    fileGallery.value = ''
-    document.getElementById('preview').style.display = 'none'
-    document.getElementById('submitBtn').disabled = true
-    document.getElementById('submitBtn').style.display = ''
-    document.getElementById('submitBtn').textContent = 'Upload'
-    document.getElementById('status').textContent = ''
-    document.getElementById('status').className = 'status'
-    document.getElementById('done').style.display = 'none'
-    document.querySelector('.wrap > div:first-child').style.display = ''
-    document.getElementById('mainBody').style.display = ''
-  })
 
   document.getElementById('submitBtn').addEventListener('click', async function(){
     var pin = document.getElementById('pin').value
     var status = document.getElementById('status')
     status.className = 'status'
     if (!/^\d{6}$/.test(pin)) { status.textContent = 'Enter your 6-digit PIN.'; status.className = 'status err'; return }
-    if (!imgBlob) { status.textContent = 'Take a photo first.'; status.className = 'status err'; return }
+    if (!selectedFiles || selectedFiles.length === 0) { status.textContent = 'Take or pick a photo first.'; status.className = 'status err'; return }
+
     var btn = document.getElementById('submitBtn')
-    btn.disabled = true; btn.textContent = 'Uploading…'
+    btn.disabled = true
     status.textContent = ''
-    var fd = new FormData()
-    fd.append('pin', pin)
-    fd.append('image', imgBlob, 'upload.jpg')
-    if (coords) { fd.append('lat', String(coords.lat)); fd.append('lng', String(coords.lng)) }
-    try {
-      var res = await fetch(endpoint, { method: 'POST', body: fd })
-      var data = {}
-      try { data = await res.json() } catch(e){}
-      if (res.ok && data.success) {
-        uploadCount++
-        document.querySelector('.wrap > div:first-child').style.display = 'none'
-        document.getElementById('mainBody').style.display = 'none'
-        var doneEl = document.getElementById('done')
-        doneEl.style.display = 'flex'
-        // Only gcash supports multi-upload (cashiers collect receipts through
-        // one QR session). Movement/attendance stay single-use.
-        if (kind === 'gcash') {
-          document.getElementById('doneSub').textContent =
-            (uploadCount === 1 ? 'Receipt uploaded. You may close this window, or upload another.' :
-                                  uploadCount + ' receipts uploaded. You may close this window, or upload another.')
-          document.getElementById('doneActions').style.display = 'block'
-        } else {
-          document.getElementById('doneSub').textContent = 'You may close this window.'
-        }
-        return
-      } else {
-        status.textContent = (data && data.message) || 'Upload failed. Check your PIN and try again.'
-        status.className = 'status err'
-        btn.disabled = false; btn.textContent = 'Upload'
+
+    var total = selectedFiles.length
+    var ok = 0
+    var failed = 0
+    var lastErr = null
+
+    for (var i = 0; i < total; i++) {
+      btn.textContent = 'Uploading ' + (i + 1) + ' / ' + total + '…'
+      var fd = new FormData()
+      fd.append('pin', pin)
+      fd.append('image', selectedFiles[i], selectedFiles[i].name || ('upload-' + (i + 1) + '.jpg'))
+      if (coords) { fd.append('lat', String(coords.lat)); fd.append('lng', String(coords.lng)) }
+      try {
+        var res = await fetch(endpoint, { method: 'POST', body: fd })
+        var data = {}
+        try { data = await res.json() } catch(e){}
+        if (res.ok && data.success) ok++
+        else { failed++; lastErr = (data && data.message) || ('HTTP ' + res.status) }
+      } catch (e) {
+        failed++; lastErr = 'Network error'
       }
-    } catch (e) {
-      status.textContent = 'Network error. Check your signal.'
+    }
+
+    if (ok === 0) {
+      status.textContent = lastErr || 'Upload failed. Check your PIN and try again.'
       status.className = 'status err'
-      btn.disabled = false; btn.textContent = 'Upload'
+      btn.disabled = false
+      btn.textContent = total > 1 ? ('Retry ' + total + ' photos') : 'Upload'
+      return
+    }
+
+    // Success (at least one). Replace whole page with clean confirmation.
+    document.querySelector('.wrap > div:first-child').style.display = 'none'
+    document.getElementById('mainBody').style.display = 'none'
+    document.getElementById('done').style.display = 'flex'
+    var subEl = document.getElementById('doneSub')
+    if (failed === 0) {
+      subEl.textContent = ok === 1 ? 'You may close this window.'
+                                   : (ok + ' photos uploaded. You may close this window.')
+    } else {
+      subEl.textContent = ok + ' of ' + total + ' uploaded, ' + failed + ' failed. ' + (lastErr || '') + ' You may close this window.'
     }
   })
 })()
