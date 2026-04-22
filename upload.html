@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Upload — Comffee POS</title>
+<style>
+ :root{--brown:#6b4a33;--cream:#faf8f5;--line:#ead7c5;--text:#2d1f17;--muted:#7d6555;--err:#c62828}
+ *{box-sizing:border-box}
+ html,body{margin:0;padding:0;background:var(--cream);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+ .wrap{max-width:440px;margin:0 auto;padding:20px 16px;min-height:100vh;display:flex;flex-direction:column;gap:14px}
+ h1{font-size:20px;margin:0 0 4px}
+ p.hint{color:var(--muted);font-size:13px;margin:0 0 6px}
+ .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px}
+ label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+ input[type=password],input[type=text]{width:100%;padding:14px;border:1.5px solid var(--line);border-radius:10px;font-size:22px;letter-spacing:8px;text-align:center;background:var(--cream);outline:none}
+ .pickbtn{display:block;width:100%;padding:16px;background:var(--brown);color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;text-align:center}
+ .pickbtn.secondary{background:#fff;color:var(--brown);border:1.5px solid var(--brown)}
+ .pickbtn[disabled]{opacity:.5;cursor:not-allowed}
+ img.preview{max-width:100%;border-radius:10px;border:1px solid var(--line);margin-top:8px}
+ .status{font-size:13px;margin-top:8px;min-height:18px}
+ .status.ok{color:#2e7d32}.status.err{color:var(--err)}
+ .small{font-size:11px;color:var(--muted);text-align:center;margin-top:8px}
+ .fatal{background:#ffebee;color:var(--err);padding:20px;border-radius:12px;text-align:center;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1 id="pageTitle">Upload Photo</h1>
+    <p class="hint" id="pageHint">Preparing…</p>
+  </div>
+
+  <div id="mainBody" style="display:none">
+    <div class="card">
+      <label>Your 6-digit PIN</label>
+      <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="off"/>
+    </div>
+
+    <div class="card">
+      <label>Photo</label>
+      <input id="file" type="file" accept="image/*" style="display:none"/>
+      <button class="pickbtn secondary" id="pickBtn">📷 Take Photo</button>
+      <img id="preview" class="preview" style="display:none"/>
+    </div>
+
+    <button class="pickbtn" id="submitBtn" disabled>Upload</button>
+    <div id="status" class="status"></div>
+    <div class="small" id="tokenLine"></div>
+  </div>
+
+  <div id="fatal" class="fatal" style="display:none"></div>
+</div>
+
+<script>
+(function(){
+  var params = new URLSearchParams(window.location.search)
+  var token = params.get('t') || ''
+  var kind  = params.get('k') || ''
+  var proj  = params.get('p') || ''   // supabase project ref — to build endpoint URL
+
+  function showFatal(msg){
+    document.getElementById('mainBody').style.display = 'none'
+    document.getElementById('fatal').style.display = 'block'
+    document.getElementById('fatal').textContent = msg
+    document.getElementById('pageHint').textContent = ''
+  }
+
+  var err = params.get('err')
+  if (err === 'invalid') return showFatal('This link is not valid. Ask the cashier for a fresh QR.')
+  if (err === 'expired') return showFatal('This QR has expired. Ask the cashier to generate a new one.')
+  if (err === 'used')    return showFatal('This QR has already been used. Ask the cashier for a new one.')
+
+  if (!/^[a-f0-9]{16,64}$/i.test(token)) return showFatal('Invalid link. Ask the cashier for a fresh QR.')
+  if (!['gcash','movement','attendance'].includes(kind)) return showFatal('Unknown upload type.')
+  if (!/^[a-z0-9]+$/i.test(proj)) return showFatal('Missing project parameter.')
+
+  var titleMap = {
+    gcash:      { t: 'Upload GCash Receipt', h: "Take a photo of the customer's GCash receipt." },
+    movement:   { t: 'Upload Cash Photo',    h: 'Take a photo of the cash or the receipt for this movement.' },
+    attendance: { t: 'Clock-in Photo',       h: 'Take a selfie to clock in.' },
+  }
+  document.getElementById('pageTitle').textContent = titleMap[kind].t
+  document.getElementById('pageHint').textContent  = titleMap[kind].h
+  document.getElementById('mainBody').style.display = ''
+  document.getElementById('tokenLine').textContent = 'Token ' + token.slice(0,8) + '… · ' + new Date().toLocaleString()
+
+  // Camera facing: selfie camera for attendance, rear camera otherwise
+  var fileInput = document.getElementById('file')
+  if (kind === 'attendance') fileInput.setAttribute('capture', 'user')
+  else fileInput.setAttribute('capture', 'environment')
+
+  var endpoint = 'https://' + proj + '.supabase.co/functions/v1/pos-upload?t=' + encodeURIComponent(token)
+  var imgBlob = null
+  var coords = null
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      function(p){ coords = { lat: p.coords.latitude, lng: p.coords.longitude } },
+      function(){},
+      { timeout: 4000, maximumAge: 60000 }
+    )
+  }
+
+  document.getElementById('pickBtn').addEventListener('click', function(){ fileInput.click() })
+  fileInput.addEventListener('change', function(e){
+    var f = e.target.files[0]
+    if (!f) return
+    imgBlob = f
+    var url = URL.createObjectURL(f)
+    var img = document.getElementById('preview')
+    img.src = url; img.style.display = 'block'
+    document.getElementById('pickBtn').textContent = '📷 Retake'
+    document.getElementById('submitBtn').disabled = false
+  })
+
+  document.getElementById('submitBtn').addEventListener('click', async function(){
+    var pin = document.getElementById('pin').value
+    var status = document.getElementById('status')
+    status.className = 'status'
+    if (!/^\d{6}$/.test(pin)) { status.textContent = 'Enter your 6-digit PIN.'; status.className = 'status err'; return }
+    if (!imgBlob) { status.textContent = 'Take a photo first.'; status.className = 'status err'; return }
+    var btn = document.getElementById('submitBtn')
+    btn.disabled = true; btn.textContent = 'Uploading…'
+    status.textContent = ''
+    var fd = new FormData()
+    fd.append('pin', pin)
+    fd.append('image', imgBlob, 'upload.jpg')
+    if (coords) { fd.append('lat', String(coords.lat)); fd.append('lng', String(coords.lng)) }
+    try {
+      var res = await fetch(endpoint, { method: 'POST', body: fd })
+      var data = {}
+      try { data = await res.json() } catch(e){}
+      if (res.ok && data.success) {
+        status.textContent = '✓ Uploaded. You can close this page.'
+        status.className = 'status ok'
+        btn.style.display = 'none'
+      } else {
+        status.textContent = (data && data.message) || 'Upload failed. Check your PIN and try again.'
+        status.className = 'status err'
+        btn.disabled = false; btn.textContent = 'Upload'
+      }
+    } catch (e) {
+      status.textContent = 'Network error. Check your signal.'
+      status.className = 'status err'
+      btn.disabled = false; btn.textContent = 'Upload'
+    }
+  })
+})()
+</script>
+</body>
+</html>
